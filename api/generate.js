@@ -55,29 +55,28 @@ TERCER TRIMESTRE (semanas 28–40):
 4. Ajustar cantidades al número de personas indicado
 5. Confirmar que la receta aporta al menos un nutriente crítico del embarazo`;
 
-function cors() {
-  return {
-    'Access-Control-Allow-Origin':  ALLOWED_ORIGIN === '*' ? '*' : ALLOWED_ORIGIN,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Access-Token',
-  };
+function setCors(res, origin) {
+  const allowed = (!origin || origin === '*') ? '*' : origin;
+  res.setHeader('Access-Control-Allow-Origin',  allowed);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Access-Token');
 }
 
 export default async function handler(req, res) {
-  const headers = cors();
+  setCors(res, ALLOWED_ORIGIN);
 
   if (req.method === 'OPTIONS') {
-    return res.status(204).set(headers).end();
+    return res.status(204).end();
   }
   if (req.method !== 'POST') {
-    return res.status(405).set(headers).json({ error: 'Método no permitido.' });
+    return res.status(405).json({ error: 'Método no permitido.' });
   }
 
   try {
     // 1. Validar token
     const token = req.headers['x-access-token'] || '';
     if (!token || token !== ACCESS_TOKEN) {
-      return res.status(401).set(headers).json({
+      return res.status(401).json({
         error: 'Acceso no autorizado. Verifica que tu link sea correcto.'
       });
     }
@@ -85,7 +84,7 @@ export default async function handler(req, res) {
     // 2. Validar body
     const { prompt } = req.body || {};
     if (!prompt || typeof prompt !== 'string' || prompt.length > 12000) {
-      return res.status(400).set(headers).json({ error: 'Solicitud inválida.' });
+      return res.status(400).json({ error: 'Solicitud inválida.' });
     }
 
     // 3. Proxy a Claude
@@ -107,7 +106,7 @@ export default async function handler(req, res) {
     if (!claudeRes.ok) {
       const e = await claudeRes.json().catch(() => ({}));
       console.error('Claude API error:', e);
-      return res.status(502).set(headers).json({
+      return res.status(502).json({
         error: 'Error al consultar el asistente. Intenta de nuevo.'
       });
     }
@@ -115,7 +114,7 @@ export default async function handler(req, res) {
     const data = await claudeRes.json();
     const text = (data.content || []).map(b => b.text || '').join('');
 
-    return res.status(200).set(headers).json({
+    return res.status(200).json({
       text,
       queriesUsed: 1,
       queriesMax:  50,
@@ -123,6 +122,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('Unhandled error:', err);
-    return res.status(500).set(headers).json({ error: 'Error interno del servidor.' });
+    return res.status(500).json({ error: 'Error interno del servidor.' });
   }
 }
