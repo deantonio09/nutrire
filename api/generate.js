@@ -2,21 +2,29 @@
 //  Nutrire · API Route — /api/generate
 //  Vercel Serverless Function (Node.js)
 //
-//  Responsabilidades:
-//    1. Validar ACCESS_TOKEN
-//    2. Rate limiting global con Vercel KV
-//    3. Inyectar system prompt experto (etapa del embarazo
-//       se gestiona aquí — el frontend no lo expone)
-//    4. Proxy seguro hacia Claude API
+//  Rate limiting: Upstash Redis (reemplaza Vercel KV)
+//  Variables requeridas en Vercel:
+//    CLAUDE_API_KEY
+//    ACCESS_TOKEN
+//    ALLOWED_ORIGIN
+//    MAX_QUERIES_GLOBAL
+//    UPSTASH_REDIS_REST_URL   ← inyectadas automáticamente
+//    UPSTASH_REDIS_REST_TOKEN ← por la integración de Upstash
 // ═══════════════════════════════════════════════════════════
 
-import { kv } from '@vercel/kv';
+import { Redis } from '@upstash/redis';
 
-const CLAUDE_API_KEY  = process.env.CLAUDE_API_KEY;
-const ACCESS_TOKEN    = process.env.ACCESS_TOKEN;
-const MAX_QUERIES     = parseInt(process.env.MAX_QUERIES_GLOBAL || '50');
-const ALLOWED_ORIGIN  = process.env.ALLOWED_ORIGIN || '*';
-const KV_KEY          = 'global:query_count';
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+const ACCESS_TOKEN   = process.env.ACCESS_TOKEN;
+const MAX_QUERIES    = parseInt(process.env.MAX_QUERIES_GLOBAL || '50');
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+const KV_KEY         = 'global:query_count';
+
+// Upstash Redis — usa las variables inyectadas por la integración
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 // ── CORS ──────────────────────────────────────────────────
 function cors() {
@@ -28,7 +36,7 @@ function cors() {
 }
 
 // ── System prompt: experto + todo el embarazo ─────────────
-const SYSTEM_PROMPT = `Eres Dra. nutricionista clínica especializada en nutrición materno-infantil con más de 20 años de experiencia acompañando embarazos de alto y bajo riesgo. Has trabajado en hospitales universitarios y clínicas especializadas en gestación y salud perinatal. Tienes formación avanzada en dietética clínica, seguridad alimentaria durante el embarazo y manejo nutricional de complicaciones gestacionales (diabetes gestacional, preeclampsia, anemia, náuseas severas).
+const SYSTEM_PROMPT = `Eres doctora nutricionista clínica especializada en nutrición materno-infantil con más de 20 años de experiencia acompañando embarazos de alto y bajo riesgo. Has trabajado en hospitales universitarios y clínicas especializadas en gestación y salud perinatal. Tienes formación avanzada en dietética clínica, seguridad alimentaria durante el embarazo y manejo nutricional de complicaciones gestacionales (diabetes gestacional, preeclampsia, anemia, náuseas severas).
 
 ━━━ PRINCIPIO FUNDAMENTAL — NO INVENTAR INFORMACIÓN ━━━
 Solo incluirás información nutricional, tiempos de cocción, temperaturas y recomendaciones clínicas respaldadas por evidencia científica consolidada (guías OMS, ACOG, EFSA, o equivalentes nacionales reconocidos). Si no tienes certeza de un dato específico, omítelo. Nunca fabricarás cifras nutricionales, afirmaciones médicas sin fundamento ni tiempos de preparación irreales. La seguridad de la madre y el bebé es tu prioridad absoluta.
@@ -76,7 +84,9 @@ TERCER TRIMESTRE (semanas 28–40):
 2. Verificar que la cocción garantiza temperatura interna segura
 3. Calcular que el tiempo total de preparación respeta el límite indicado
 4. Ajustar cantidades al número de personas indicado
-5. Confirmar que la receta aporta al menos un nutriente crítico del embarazo`;
+5. Confirmar que la receta aporta al menos un nutriente crítico del embarazo
+6. La receta debe ser en español
+7. La recede debe ser deliciosa`;
 
 // ── Main handler ──────────────────────────────────────────
 export default async function handler(req, res) {
@@ -98,8 +108,8 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2. Rate limiting global ─────────────────────────────
-    const count = (await kv.get(KV_KEY)) || 0;
+    // 2. Rate limiting global con Upstash ─────────────────
+    const count = (await redis.get(KV_KEY)) || 0;
     if (count >= MAX_QUERIES) {
       return res.status(429).set(headers).json({
         error: `Se alcanzó el límite de ${MAX_QUERIES} consultas del período de prueba. Contacta al administrador.`,
@@ -107,7 +117,8 @@ export default async function handler(req, res) {
         max:  MAX_QUERIES,
       });
     }
-    await kv.set(KV_KEY, count + 1, { ex: 60 * 60 * 24 * 30 });
+    // Incrementar con TTL de 30 días
+    await redis.set(KV_KEY, count + 1, { ex: 60 * 60 * 24 * 30 });
 
     // 3. Validar body ─────────────────────────────────────
     const { prompt } = req.body || {};
@@ -116,9 +127,6 @@ export default async function handler(req, res) {
     }
 
     // 4. Proxy a Claude con system prompt ─────────────────
-    //    El system prompt contiene toda la lógica experta
-    //    del embarazo — el frontend solo envía los parámetros
-    //    del usuario (días, personas, comidas, tiempo, prefs).
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method:  'POST',
       headers: {
@@ -127,10 +135,10 @@ export default async function handler(req, res) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model:     'claude-sonnet-4-20250514',
+        model:      'claude-sonnet-4-20250514',
         max_tokens: 8192,
-        system:    SYSTEM_PROMPT,
-        messages:  [{ role: 'user', content: prompt }],
+        system:     SYSTEM_PROMPT,
+        messages:   [{ role: 'user', content: prompt }],
       }),
     });
 
