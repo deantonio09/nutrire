@@ -12,6 +12,7 @@
 //    UPSTASH_REDIS_REST_TOKEN ← por la integración de Upstash
 // ═══════════════════════════════════════════════════════════
 
+// v2
 import { Redis } from '@upstash/redis';
 
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
